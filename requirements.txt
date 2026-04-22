@@ -1,26 +1,27 @@
 # ─── Core ──────────────────────────────────────────────────────
-streamlit>=1.32.0
+streamlit==1.32.0
 
-# ─── Face Recognition (ArcFace CNN via DeepFace) ───────────────
-deepface>=0.0.91
+# ─── Face Recognition ─────────────────────────────────────────
+deepface==0.0.79
 
-# ─── Deep-Learning backend ───────────────────────────────────
-# Using 2.15+ for broader compatibility
-tensorflow>=2.15.0
-tf-keras>=2.15.0
+# ─── Deep Learning Backend ────────────────────────────────────
+tensorflow==2.15.0
+tf-keras==2.15.0
 
-# ─── Image processing ──────────────────────────────────────────
-opencv-python>=4.8.0
+# ─── Image Processing ─────────────────────────────────────────
+opencv-python-headless==4.8.1.78
 Pillow>=10.0.0
 
-# ─── Numerical / scientific ────────────────────────────────────
+# ─── Scientific Stack ─────────────────────────────────────────
 numpy>=1.24.0,<2.0.0
 scipy>=1.10.0
 
-# ─── Data & Excel ──────────────────────────────────────────────
+# ─── Data Handling ────────────────────────────────────────────
 pandas>=2.0.0
 openpyxl>=3.1.0
 
-# ─── Face detector dependencies (MTCNN) ────────────────────────
+# ─── Face Detection ───────────────────────────────────────────
 mtcnn>=0.1.0
-retina-face>=0.0.13
+retina-face==0.0.13
+
+echo "python-3.10" > runtime.txt
