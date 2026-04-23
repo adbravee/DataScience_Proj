@@ -2,27 +2,25 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║        SMART CLASSROOM ATTENDANCE SYSTEM                         ║
 ║        Powered by ArcFace CNN + RetinaFace                       ║
-║        Roll Number Integration & High-Density Detection          ║
+║        Admin Access Control & Roll Number Integration            ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
 import os
 import pickle
 import warnings
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image
 from scipy.spatial.distance import cosine
-from datetime import datetime, date, timezone, timedelta
 
+warnings.filterwarnings("ignore")
 
 # Define Indian Standard Time (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
-
-warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────────
 #  IMPORT GUARDS
@@ -66,10 +64,15 @@ from openpyxl.utils import get_column_letter
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────────
 class Config:
+    # --- SECURITY ---
+    ADMIN_PASSWORD    = "yehaw"  # Change this to your preferred admin password
+    
+    # --- MODEL ---
     MODEL_NAME        = "ArcFace"
     DETECTOR_BACKEND  = "retinaface"
     DEFAULT_THRESHOLD = 0.60
     
+    # --- PATHS ---
     DATA_DIR          = "data"
     EMBEDDINGS_FILE   = "data/student_embeddings.pkl"
     ATTENDANCE_FILE   = "data/attendance.xlsx"
@@ -109,7 +112,6 @@ def load_deepface():
 def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return vec / (np.linalg.norm(vec) + 1e-10)
 
-
 def extract_embedding_single(img_rgb: np.ndarray, DeepFace) -> tuple:
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
     try:
@@ -126,7 +128,6 @@ def extract_embedding_single(img_rgb: np.ndarray, DeepFace) -> tuple:
     except Exception as e:
         st.debug(f"Registration Error: {e}")
     return None, {}
-
 
 def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
     if img_rgb is None or img_rgb.size == 0:
@@ -323,7 +324,6 @@ def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
             cv2.line(img, (cx, cy), (cx + dx * corner_len, cy), colour, thick + 2)
             cv2.line(img, (cx, cy), (cx, cy + dy * corner_len), colour, thick + 2)
 
-        # Clean display label
         label = identifier if is_recognized else "Unknown"
         label = f"{label} ({score:.2f})"
         
@@ -450,7 +450,7 @@ def hero_banner():
 
 
 # ── PAGE: REGISTER ─────────────────────────────────────────────────
-def page_register(DeepFace):
+def page_register(DeepFace, is_admin):
     st.markdown('<p class="section-title">Student Registration</p>', unsafe_allow_html=True)
     
     c1, c2 = st.columns([1.1, 1], gap="large")
@@ -472,7 +472,6 @@ def page_register(DeepFace):
 
         if files and name.strip() and roll_number.strip():
             if st.button("Register Student Data", use_container_width=True):
-                # Create a unique identifier combining both fields
                 identifier = f"{roll_number.strip()} - {name.strip()}"
                 
                 bar = st.progress(0, text="Processing...")
@@ -503,10 +502,8 @@ def page_register(DeepFace):
                 with st.expander(f"{identifier} ({len(data['embeddings'])} records)"):
                     cols = st.columns([1, 2])
                     if data.get("thumbnail") is not None:
-                        # Fixed the use_column_width deprecation warning
                         cols[0].image(data["thumbnail"], width=100) 
                     
-                    # Try splitting back into Roll Number and Name
                     try:
                         roll, disp_name = identifier.split(" - ", 1)
                     except ValueError:
@@ -516,9 +513,11 @@ def page_register(DeepFace):
                     cols[1].markdown(f"**Name:** {disp_name}")
                     cols[1].markdown(f"**Data Points:** {len(data['embeddings'])}")
                     
-                    if cols[1].button("Remove Record", key=f"del_{identifier}"):
-                        delete_student(identifier)
-                        st.rerun()
+                    # --- ADMIN ONLY: REMOVE RECORD ---
+                    if is_admin:
+                        if cols[1].button("Remove Record", key=f"del_{identifier}"):
+                            delete_student(identifier)
+                            st.rerun()
 
 
 # ── PAGE: MARK ATTENDANCE ─────────────────────────────────────────
@@ -538,7 +537,6 @@ def page_attendance(DeepFace, threshold):
 
         if upl:
             img_rgb = np.array(Image.open(upl).convert("RGB"))
-            # Fixed the use_column_width deprecation warning
             st.image(img_rgb, caption="Input Source", use_container_width=True)
 
         if upl and st.button("Execute Scan & Log Attendance", use_container_width=True):
@@ -559,7 +557,6 @@ def page_attendance(DeepFace, threshold):
                 detections.append({"identifier": identifier, "similarity": score, "facial_area": face["facial_area"]})
 
                 if identifier != "Unknown":
-                    # Extract roll number and name from the identifier string
                     try:
                         roll_no, stu_name = identifier.split(" - ", 1)
                     except ValueError:
@@ -588,7 +585,6 @@ def page_attendance(DeepFace, threshold):
 
     with c2:
         if "last_annotated" in st.session_state:
-            # Fixed the use_column_width deprecation warning
             st.image(st.session_state["last_annotated"], caption="Processed Output", use_container_width=True)
 
         if "last_results" in st.session_state:
@@ -651,7 +647,6 @@ def page_records():
     with fc3:
         st.metric("Total Displayed", len(filt))
 
-    # Using use_container_width here is valid for dataframes
     st.dataframe(filt, use_container_width=True, hide_index=True)
 
     st.markdown('<p class="section-title" style="margin-top:24px">Aggregate Data</p>', unsafe_allow_html=True)
@@ -682,7 +677,7 @@ def page_records():
 
 
 # ── PAGE: SETTINGS ────────────────────────────────────────────────
-def page_settings(threshold):
+def page_settings(threshold, is_admin):
     st.markdown('<p class="section-title">Configuration</p>', unsafe_allow_html=True)
 
     c1, c2 = st.columns(2, gap="large")
@@ -695,22 +690,27 @@ def page_settings(threshold):
 | Detection CNN | `{Config.DETECTOR_BACKEND}` |
 | Distance Metric | Cosine |
 | Active Cutoff | `{threshold:.2f}` |
+| Administrator Mode | `{"Active" if is_admin else "Disabled"}` |
         """)
 
     with c2:
         st.subheader("Data Wipes")
         
-        if st.button("Purge Attendance Logs", use_container_width=True):
-            if os.path.exists(Config.ATTENDANCE_FILE):
-                os.remove(Config.ATTENDANCE_FILE)
-            st.success("Logs purged successfully.")
-            st.rerun()
+        # --- ADMIN ONLY: DATA WIPES ---
+        if is_admin:
+            if st.button("Purge Attendance Logs", use_container_width=True):
+                if os.path.exists(Config.ATTENDANCE_FILE):
+                    os.remove(Config.ATTENDANCE_FILE)
+                st.success("Logs purged successfully.")
+                st.rerun()
 
-        if st.button("Purge Registered Identities", use_container_width=True):
-            if os.path.exists(Config.EMBEDDINGS_FILE):
-                os.remove(Config.EMBEDDINGS_FILE)
-            st.success("Identities purged successfully.")
-            st.rerun()
+            if st.button("Purge Registered Identities", use_container_width=True):
+                if os.path.exists(Config.EMBEDDINGS_FILE):
+                    os.remove(Config.EMBEDDINGS_FILE)
+                st.success("Identities purged successfully.")
+                st.rerun()
+        else:
+            st.info("Admin access required to perform system data wipes.")
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -724,13 +724,22 @@ def main():
     )
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     init_directories()
+    
+    # Initialize Admin State
+    if "is_admin" not in st.session_state:
+        st.session_state["is_admin"] = False
 
     with st.sidebar:
         st.markdown("### Navigation")
         
+        # --- ADMIN ONLY: SYSTEM LOGS PAGE ---
+        nav_options = ["Student Registration", "Classroom Scan", "Configuration"]
+        if st.session_state["is_admin"]:
+            nav_options.insert(2, "System Logs")
+            
         page = st.radio(
             "Menu",
-            ["Student Registration", "Classroom Scan", "System Logs", "Configuration"],
+            nav_options,
             label_visibility="collapsed",
         )
 
@@ -743,13 +752,38 @@ def main():
         st.metric("Identities", len(db))
         st.metric("Present Today", today_cnt)
         
-        st.markdown("---")
-        threshold = st.slider(
-            "Strictness Threshold",
-            min_value=0.20, max_value=0.90,
-            value=Config.DEFAULT_THRESHOLD, step=0.05,
-        )
+        # --- ADMIN ONLY: THRESHOLD SLIDER ---
+        if st.session_state["is_admin"]:
+            st.markdown("---")
+            threshold = st.slider(
+                "Strictness Threshold",
+                min_value=0.20, max_value=0.90,
+                value=Config.DEFAULT_THRESHOLD, step=0.05,
+            )
+        else:
+            threshold = Config.DEFAULT_THRESHOLD
+            
+        # Admin Login Area at the bottom of the sidebar
+        st.markdown("<br><br><hr>", unsafe_allow_html=True)
+        st.markdown("#### Admin Portal")
+        pwd = st.text_input("Access Key", type="password", key="admin_pwd_input")
+        
+        if pwd == Config.ADMIN_PASSWORD:
+            if not st.session_state["is_admin"]:
+                st.session_state["is_admin"] = True
+                st.rerun()
+            st.success("Admin mode unlocked.")
+        elif pwd != "":
+            if st.session_state["is_admin"]:
+                st.session_state["is_admin"] = False
+                st.rerun()
+            st.error("Invalid access key.")
+        else:
+            if st.session_state["is_admin"]:
+                st.session_state["is_admin"] = False
+                st.rerun()
 
+    # Load DeepFace model
     if "deepface_model" not in st.session_state:
         with st.spinner("Initializing Deep Learning Models..."):
             st.session_state.deepface_model = load_deepface()
@@ -758,14 +792,15 @@ def main():
 
     hero_banner()
 
+    # Route handling
     if "Registration" in page:
-        page_register(DeepFace)
+        page_register(DeepFace, st.session_state["is_admin"])
     elif "Scan" in page:
         page_attendance(DeepFace, threshold)
     elif "Logs" in page:
         page_records()
     elif "Configuration" in page:
-        page_settings(threshold)
+        page_settings(threshold, st.session_state["is_admin"])
 
 if __name__ == "__main__":
     main()
