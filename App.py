@@ -2,7 +2,7 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║        SMART CLASSROOM ATTENDANCE SYSTEM                         ║
 ║        Powered by ArcFace CNN + RetinaFace                       ║
-║        High-Density Group Detection                              ║
+║        Roll Number Integration & High-Density Detection          ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
 
@@ -16,6 +16,11 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 from scipy.spatial.distance import cosine
+from datetime import datetime, date, timezone, timedelta
+
+
+# Define Indian Standard Time (UTC + 5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 warnings.filterwarnings("ignore")
 
@@ -61,11 +66,8 @@ from openpyxl.utils import get_column_letter
 #  CONFIGURATION
 # ─────────────────────────────────────────────────────────────────
 class Config:
-    # ArcFace gives state-of-the-art accuracy
     MODEL_NAME        = "ArcFace"
-    # RetinaFace is the most accurate CNN for dense group images
     DETECTOR_BACKEND  = "retinaface"
-    # Tuned threshold for ArcFace Cosine Similarity
     DEFAULT_THRESHOLD = 0.60
     
     DATA_DIR          = "data"
@@ -88,7 +90,6 @@ def init_directories() -> None:
 @st.cache_resource(show_spinner="Loading AI Models (ArcFace & RetinaFace)...")
 def load_deepface():
     from deepface import DeepFace
-    # Warm-up to load weights into memory
     dummy = np.zeros((160, 160, 3), dtype=np.uint8)
     try:
         DeepFace.represent(
@@ -106,12 +107,10 @@ def load_deepface():
 #  EMBEDDING EXTRACTION (CNN)
 # ─────────────────────────────────────────────────────────────────
 def l2_normalize(vec: np.ndarray) -> np.ndarray:
-    """Normalize embedding vectors for cosine similarity."""
     return vec / (np.linalg.norm(vec) + 1e-10)
 
 
 def extract_embedding_single(img_rgb: np.ndarray, DeepFace) -> tuple:
-    """Extract embedding for a single registration photo."""
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
     try:
         results = DeepFace.represent(
@@ -119,7 +118,7 @@ def extract_embedding_single(img_rgb: np.ndarray, DeepFace) -> tuple:
             model_name=Config.MODEL_NAME,
             detector_backend=Config.DETECTOR_BACKEND,
             enforce_detection=True,
-            align=True, # Critical for CNN accuracy
+            align=True, 
         )
         if results:
             emb = l2_normalize(np.array(results[0]["embedding"]))
@@ -130,10 +129,6 @@ def extract_embedding_single(img_rgb: np.ndarray, DeepFace) -> tuple:
 
 
 def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
-    """
-    Detect ALL faces using RetinaFace FPN (Feature Pyramid Network).
-    Native multi-scale detection replaces the inefficient manual resizing loop.
-    """
     if img_rgb is None or img_rgb.size == 0:
         return []
     
@@ -141,7 +136,6 @@ def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
     extracted_faces = []
     
     try:
-        # RetinaFace handles group detection natively and highly accurately
         results = DeepFace.represent(
             img_path=img_bgr,
             model_name=Config.MODEL_NAME,
@@ -157,7 +151,6 @@ def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
             confidence = r.get("face_confidence", 1.0)
             facial_area = r.get("facial_area", {})
             
-            # Filter out false positives (extremely small artifacts)
             if facial_area:
                 if min(facial_area.get("w", 0), facial_area.get("h", 0)) < 15:
                     continue
@@ -189,18 +182,18 @@ def save_embeddings(db: dict) -> None:
     with open(Config.EMBEDDINGS_FILE, "wb") as f:
         pickle.dump(db, f)
 
-def add_student(name: str, embedding: np.ndarray, thumb_rgb: np.ndarray = None) -> None:
+def add_student(identifier: str, embedding: np.ndarray, thumb_rgb: np.ndarray = None) -> None:
     db = load_embeddings()
-    if name not in db:
-        db[name] = {"embeddings": [], "thumbnail": None}
-    db[name]["embeddings"].append(embedding)
+    if identifier not in db:
+        db[identifier] = {"embeddings": [], "thumbnail": None}
+    db[identifier]["embeddings"].append(embedding)
     if thumb_rgb is not None:
-        db[name]["thumbnail"] = cv2.resize(thumb_rgb, (80, 80))
+        db[identifier]["thumbnail"] = cv2.resize(thumb_rgb, (80, 80))
     save_embeddings(db)
 
-def delete_student(name: str) -> None:
+def delete_student(identifier: str) -> None:
     db = load_embeddings()
-    db.pop(name, None)
+    db.pop(identifier, None)
     save_embeddings(db)
 
 
@@ -208,19 +201,19 @@ def delete_student(name: str) -> None:
 #  FACE MATCHING
 # ─────────────────────────────────────────────────────────────────
 def match_face(query_emb: np.ndarray, db: dict, threshold: float) -> tuple:
-    best_name = "Unknown"
+    best_identifier = "Unknown"
     best_score = -1.0
 
-    for name, data in db.items():
+    for identifier, data in db.items():
         scores = [1.0 - cosine(query_emb, e) for e in data["embeddings"]]
         score = max(scores) if scores else 0.0
         if score > best_score:
             best_score = score
-            best_name = name
+            best_identifier = identifier
 
     if best_score < threshold:
         return "Unknown", best_score
-    return best_name, best_score
+    return best_identifier, best_score
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -232,7 +225,7 @@ def load_attendance() -> pd.DataFrame:
             return pd.read_excel(Config.ATTENDANCE_FILE)
         except Exception:
             pass
-    return pd.DataFrame(columns=["Name", "Date", "Time", "Status"])
+    return pd.DataFrame(columns=["Roll Number", "Name", "Date", "Time", "Status"])
 
 def save_attendance(df: pd.DataFrame) -> None:
     wb = openpyxl.Workbook()
@@ -269,20 +262,21 @@ def save_attendance(df: pd.DataFrame) -> None:
     ws.row_dimensions[1].height = 22
     wb.save(Config.ATTENDANCE_FILE)
 
-def mark_attendance(name: str, date_str: str) -> tuple[bool, str]:
-    now = datetime.now().strftime("%H:%M:%S")
+def mark_attendance(roll_number: str, name: str, date_str: str) -> tuple[bool, str]:
+    now = datetime.now(IST).strftime("%H:%M:%S")
     df  = load_attendance()
 
     if not df.empty:
-        dup = df[(df["Name"] == name) & (df["Date"] == date_str)]
+        dup = df[(df["Roll Number"] == roll_number) & (df["Date"] == date_str)]
         if not dup.empty:
             return False, "Already marked"
 
     new_row = pd.DataFrame([{
-        "Name":   name,
-        "Date":   date_str,
-        "Time":   now,
-        "Status": "Present",
+        "Roll Number": roll_number,
+        "Name":        name,
+        "Date":        date_str,
+        "Time":        now,
+        "Status":      "Present",
     }])
     df = pd.concat([df, new_row], ignore_index=True)
     save_attendance(df)
@@ -297,7 +291,7 @@ def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
     h, w = img.shape[:2]
 
     for det in detections:
-        name  = det["name"]
+        identifier = det["identifier"]
         score = det["similarity"]
         area  = det.get("facial_area", {})
 
@@ -307,7 +301,7 @@ def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
         if not (bw > 0 and bh > 0):
             continue
 
-        is_recognized = name != "Unknown"
+        is_recognized = identifier != "Unknown"
         if is_recognized:
             if score > 0.85:
                 colour = (46, 213, 115) 
@@ -329,7 +323,10 @@ def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
             cv2.line(img, (cx, cy), (cx + dx * corner_len, cy), colour, thick + 2)
             cv2.line(img, (cx, cy), (cx, cy + dy * corner_len), colour, thick + 2)
 
-        label    = f"{name} ({score:.2f})"
+        # Clean display label
+        label = identifier if is_recognized else "Unknown"
+        label = f"{label} ({score:.2f})"
+        
         font     = cv2.FONT_HERSHEY_DUPLEX
         font_scale = max(0.4, min(w, h) / 1000)
         (tw, th), baseline = cv2.getTextSize(label, font, font_scale, 1)
@@ -459,7 +456,12 @@ def page_register(DeepFace):
     c1, c2 = st.columns([1.1, 1], gap="large")
 
     with c1:
-        name = st.text_input("Full Name", placeholder="Enter student name")
+        rc1, rc2 = st.columns([1, 2])
+        with rc1:
+            roll_number = st.text_input("Roll Number", placeholder="e.g. 101")
+        with rc2:
+            name = st.text_input("Full Name", placeholder="Enter student name")
+            
         mode = st.radio("Upload Method", ["Single photo", "Multiple photos"], horizontal=True)
         
         if mode == "Single photo":
@@ -468,8 +470,11 @@ def page_register(DeepFace):
         else:
             files = st.file_uploader("Select Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-        if files and name.strip():
+        if files and name.strip() and roll_number.strip():
             if st.button("Register Student Data", use_container_width=True):
+                # Create a unique identifier combining both fields
+                identifier = f"{roll_number.strip()} - {name.strip()}"
+                
                 bar = st.progress(0, text="Processing...")
                 ok = 0
                 for i, f in enumerate(files):
@@ -477,16 +482,16 @@ def page_register(DeepFace):
                     with st.spinner(f"Encoding facial data {i+1}/{len(files)}..."):
                         emb, _ = extract_embedding_single(img, DeepFace)
                     if emb is not None:
-                        add_student(name.strip(), emb, img)
+                        add_student(identifier, emb, img)
                         ok += 1
                     bar.progress((i + 1) / len(files), text=f"Processed {i+1}/{len(files)}")
 
                 if ok:
-                    st.success(f"Success: {name.strip()} registered with {ok} encodings.")
+                    st.success(f"Success: {identifier} registered with {ok} encodings.")
                 else:
                     st.error("Error: No valid faces detected in the provided images.")
-        elif files and not name.strip():
-            st.warning("A student name is required.")
+        elif files and (not name.strip() or not roll_number.strip()):
+            st.warning("Both Roll Number and Student Name are required.")
 
     with c2:
         st.markdown('<p class="section-title">Database Overview</p>', unsafe_allow_html=True)
@@ -494,15 +499,25 @@ def page_register(DeepFace):
         if not db:
             st.info("System database is empty.")
         else:
-            for sname, data in db.items():
-                with st.expander(f"{sname} ({len(data['embeddings'])} records)"):
+            for identifier, data in db.items():
+                with st.expander(f"{identifier} ({len(data['embeddings'])} records)"):
                     cols = st.columns([1, 2])
                     if data.get("thumbnail") is not None:
-                        cols[0].image(data["thumbnail"], use_column_width=False, width=100)
-                    cols[1].markdown(f"**Identifier:** {sname}")
+                        # Fixed the use_column_width deprecation warning
+                        cols[0].image(data["thumbnail"], width=100) 
+                    
+                    # Try splitting back into Roll Number and Name
+                    try:
+                        roll, disp_name = identifier.split(" - ", 1)
+                    except ValueError:
+                        roll, disp_name = "N/A", identifier
+                        
+                    cols[1].markdown(f"**Roll No:** {roll}")
+                    cols[1].markdown(f"**Name:** {disp_name}")
                     cols[1].markdown(f"**Data Points:** {len(data['embeddings'])}")
-                    if cols[1].button("Remove Record", key=f"del_{sname}"):
-                        delete_student(sname)
+                    
+                    if cols[1].button("Remove Record", key=f"del_{identifier}"):
+                        delete_student(identifier)
                         st.rerun()
 
 
@@ -519,11 +534,12 @@ def page_attendance(DeepFace, threshold):
 
     with c1:
         upl = st.file_uploader("Select Classroom Image", type=["jpg", "jpeg", "png"])
-        att_date = st.date_input("Date of Record", value=date.today())
+        att_date = st.date_input("Date of Record", value=datetime.now(IST).date())
 
         if upl:
             img_rgb = np.array(Image.open(upl).convert("RGB"))
-            st.image(img_rgb, caption="Input Source", use_column_width=True)
+            # Fixed the use_column_width deprecation warning
+            st.image(img_rgb, caption="Input Source", use_container_width=True)
 
         if upl and st.button("Execute Scan & Log Attendance", use_container_width=True):
             with st.spinner("Executing RetinaFace detection matrix..."):
@@ -539,26 +555,41 @@ def page_attendance(DeepFace, threshold):
             results_log = []
 
             for face in faces:
-                name, score = match_face(face["embedding"], db, threshold)
-                detections.append({"name": name, "similarity": score, "facial_area": face["facial_area"]})
+                identifier, score = match_face(face["embedding"], db, threshold)
+                detections.append({"identifier": identifier, "similarity": score, "facial_area": face["facial_area"]})
 
-                if name != "Unknown":
-                    marked, msg = mark_attendance(name, date_str)
+                if identifier != "Unknown":
+                    # Extract roll number and name from the identifier string
+                    try:
+                        roll_no, stu_name = identifier.split(" - ", 1)
+                    except ValueError:
+                        roll_no, stu_name = "N/A", identifier
+                        
+                    marked, msg = mark_attendance(roll_no, stu_name, date_str)
+                    
                     results_log.append({
-                        "name":   name,
+                        "roll":   roll_no,
+                        "name":   stu_name,
                         "score":  score,
                         "status": "present"  if marked else "already",
                         "msg":    msg,
                     })
                 else:
-                    results_log.append({"name": "Unknown", "score": score, "status": "unknown", "msg": "Unidentified"})
+                    results_log.append({
+                        "roll": "N/A", 
+                        "name": "Unknown", 
+                        "score": score, 
+                        "status": "unknown", 
+                        "msg": "Unidentified"
+                    })
 
             st.session_state["last_annotated"] = annotate_image(img_rgb, detections)
             st.session_state["last_results"]   = results_log
 
     with c2:
         if "last_annotated" in st.session_state:
-            st.image(st.session_state["last_annotated"], caption="Processed Output", use_column_width=True)
+            # Fixed the use_column_width deprecation warning
+            st.image(st.session_state["last_annotated"], caption="Processed Output", use_container_width=True)
 
         if "last_results" in st.session_state:
             results_log = st.session_state["last_results"]
@@ -569,9 +600,12 @@ def page_attendance(DeepFace, threshold):
                 chip_lbl = {"present": "Present", "already": "Duplicate", "unknown": "Unknown"}[r["status"]]
                 bar_w    = int(r["score"] * 100)
                 bar_col  = "#3FB950" if r["status"] != "unknown" else "#FF7B72"
+                
+                disp_text = f"[{r['roll']}] {r['name']}" if r['status'] != "unknown" else "Unknown Subject"
+                
                 st.markdown(f"""
                 <div class="result-row">
-                  <span style="font-weight:500;min-width:120px">{r['name']}</span>
+                  <span style="font-weight:500;min-width:140px">{disp_text}</span>
                   <span class="{chip_cls}">{chip_lbl}</span>
                   <div class="conf-bar-wrap">
                     <div class="conf-bar" style="width:{bar_w}%;background:{bar_col}"></div>
@@ -606,7 +640,7 @@ def page_records():
         sel_date = st.selectbox("Date Filter", dates)
     with fc2:
         students = ["All"] + sorted(df["Name"].unique())
-        sel_stu  = st.selectbox("Identifier Filter", students)
+        sel_stu  = st.selectbox("Name Filter", students)
 
     filt = df.copy()
     if sel_date != "All":
@@ -617,13 +651,14 @@ def page_records():
     with fc3:
         st.metric("Total Displayed", len(filt))
 
+    # Using use_container_width here is valid for dataframes
     st.dataframe(filt, use_container_width=True, hide_index=True)
 
     st.markdown('<p class="section-title" style="margin-top:24px">Aggregate Data</p>', unsafe_allow_html=True)
 
     total_days = df["Date"].nunique()
     summary = (
-        df.groupby("Name")
+        df.groupby(["Roll Number", "Name"])
         .agg(Days_Present=("Date", "nunique"), First_Seen=("Date", "min"), Last_Seen=("Date", "max"))
         .reset_index()
     )
@@ -702,7 +737,7 @@ def main():
         st.markdown("---")
         db   = load_embeddings()
         att  = load_attendance()
-        today_str = date.today().strftime("%Y-%m-%d")
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
         today_cnt = len(att[att["Date"] == today_str]) if not att.empty else 0
 
         st.metric("Identities", len(db))
