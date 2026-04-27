@@ -521,7 +521,7 @@ def page_register(DeepFace, is_admin):
         with rc2:
             name = st.text_input("Full Name", placeholder="Enter student name")
             
-        mode = st.radio("Upload Method", [ "Multiple photos"], horizontal=True)
+        mode = st.radio("Upload Method", ["Single photo", "Multiple photos"], horizontal=True)
         
         can_proceed = False
         if mode == "Single photo":
@@ -772,7 +772,7 @@ def page_records():
     total_days = df["Date"].nunique()
     summary = (
         df.groupby(["Roll Number", "Name"])
-        .agg(Days_Present=("Date", "nunique"), First_Seen=("Date", "min"))
+        .agg(Days_Present=("Date", "nunique"), First_Seen=("Date", "min"), Last_Seen=("Date", "max"))
         .reset_index()
     )
     summary["Attendance_%"] = (summary["Days_Present"] / total_days * 100).round(1).astype(str) + "%"
