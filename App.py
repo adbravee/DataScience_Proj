@@ -1,14 +1,15 @@
 """
-╔══════════════════════════════════════════════════════════════════╗
-║        SMART CLASSROOM ATTENDANCE SYSTEM                         ║
-║        Powered by ArcFace CNN + RetinaFace                       ║
-║        Admin Access Control & Roll Number Integration            ║
-╚══════════════════════════════════════════════════════════════════╝
+===================================================================
+        SMART CLASSROOM ATTENDANCE SYSTEM                         
+        Powered by ArcFace CNN + RetinaFace                       
+        Production-Ready Build: RBAC, Continuous Learning, Exports            
+===================================================================
 """
 
 import os
 import pickle
 import warnings
+from io import BytesIO
 from datetime import datetime, date, timezone, timedelta
 
 import numpy as np
@@ -22,35 +23,26 @@ warnings.filterwarnings("ignore")
 # Define Indian Standard Time (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  IMPORT GUARDS
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 def check_imports():
-    """Verify all required packages are installed."""
     errors = []
-    
     try:
         import cv2
     except ImportError:
         errors.append("cv2 (OpenCV)")
-    
     try:
         import openpyxl
     except ImportError:
         errors.append("openpyxl (Excel support)")
-        
     try:
         import retinaface
     except ImportError:
         errors.append("retina-face (Crucial for group detection)")
     
     if errors:
-        st.error(f"""
-        Missing Python packages: {', '.join(errors)}
-        
-        Fix: Run this in your terminal:
-        pip install opencv-python openpyxl retina-face
-        """)
+        st.error(f"Missing Python packages: {', '.join(errors)}\nFix: pip install opencv-python openpyxl retina-face")
         st.stop()
 
 check_imports()
@@ -60,17 +52,21 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  CONFIGURATION
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 class Config:
     # --- SECURITY ---
-    ADMIN_PASSWORD    = "yehaw"  # Change this to your preferred admin password
+    ADMIN_PASSWORD    = "Bologna"  # Master password for scanning and data management
     
     # --- MODEL ---
     MODEL_NAME        = "ArcFace"
     DETECTOR_BACKEND  = "retinaface"
     DEFAULT_THRESHOLD = 0.60
+    
+    # --- CONTINUOUS LEARNING ---
+    AUTO_UPDATE_THRESHOLD = 0.82 
+    MAX_RECORDS_PER_IDENTITY = 15
     
     # --- PATHS ---
     DATA_DIR          = "data"
@@ -79,17 +75,17 @@ class Config:
     STUDENT_IMG_DIR   = "data/student_images"
 
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  BOOTSTRAP
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 def init_directories() -> None:
     for path in [Config.DATA_DIR, Config.STUDENT_IMG_DIR]:
         os.makedirs(path, exist_ok=True)
 
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  MODEL LOADER
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 @st.cache_resource(show_spinner="Loading AI Models (ArcFace & RetinaFace)...")
 def load_deepface():
     from deepface import DeepFace
@@ -106,9 +102,9 @@ def load_deepface():
     return DeepFace
 
 
-# ─────────────────────────────────────────────────────────────────
-#  EMBEDDING EXTRACTION (CNN)
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
+#  EMBEDDING EXTRACTION & DETECTION (CNN)
+# -----------------------------------------------------------------
 def l2_normalize(vec: np.ndarray) -> np.ndarray:
     return vec / (np.linalg.norm(vec) + 1e-10)
 
@@ -150,8 +146,12 @@ def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
                 continue
             
             confidence = r.get("face_confidence", 1.0)
-            facial_area = r.get("facial_area", {})
             
+            # Accuracy Filter: Reject background artifacts
+            if confidence < 0.90:
+                continue
+                
+            facial_area = r.get("facial_area", {})
             if facial_area:
                 if min(facial_area.get("w", 0), facial_area.get("h", 0)) < 15:
                     continue
@@ -170,9 +170,9 @@ def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
         return []
 
 
-# ─────────────────────────────────────────────────────────────────
-#  DATABASE MANAGEMENT
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
+#  DATABASE & CONTINUOUS LEARNING MANAGEMENT
+# -----------------------------------------------------------------
 def load_embeddings() -> dict:
     if os.path.exists(Config.EMBEDDINGS_FILE):
         with open(Config.EMBEDDINGS_FILE, "rb") as f:
@@ -197,10 +197,34 @@ def delete_student(identifier: str) -> None:
     db.pop(identifier, None)
     save_embeddings(db)
 
+def batch_update_embeddings(updates: dict) -> int:
+    if not updates:
+        return 0
+        
+    db = load_embeddings()
+    update_count = 0
+    
+    for identifier, new_emb in updates.items():
+        if identifier in db:
+            db[identifier]["embeddings"].append(new_emb)
+            
+            # Enforce memory limit
+            if len(db[identifier]["embeddings"]) > Config.MAX_RECORDS_PER_IDENTITY:
+                original_reg = db[identifier]["embeddings"][0]
+                recent_recs = db[identifier]["embeddings"][-(Config.MAX_RECORDS_PER_IDENTITY - 1):]
+                db[identifier]["embeddings"] = [original_reg] + recent_recs
+                
+            update_count += 1
+            
+    if update_count > 0:
+        save_embeddings(db)
+        
+    return update_count
 
-# ─────────────────────────────────────────────────────────────────
+
+# -----------------------------------------------------------------
 #  FACE MATCHING
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 def match_face(query_emb: np.ndarray, db: dict, threshold: float) -> tuple:
     best_identifier = "Unknown"
     best_score = -1.0
@@ -217,9 +241,9 @@ def match_face(query_emb: np.ndarray, db: dict, threshold: float) -> tuple:
     return best_identifier, best_score
 
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  ATTENDANCE LOGIC
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 def load_attendance() -> pd.DataFrame:
     if os.path.exists(Config.ATTENDANCE_FILE):
         try:
@@ -284,9 +308,9 @@ def mark_attendance(roll_number: str, name: str, date_str: str) -> tuple[bool, s
     return True, f"Marked at {now}"
 
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  IMAGE ANNOTATION
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
     img = img_rgb.copy()
     h, w = img.shape[:2]
@@ -304,9 +328,9 @@ def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
 
         is_recognized = identifier != "Unknown"
         if is_recognized:
-            if score > 0.85:
+            if score >= Config.AUTO_UPDATE_THRESHOLD:
                 colour = (46, 213, 115) 
-            elif score > 0.70:
+            elif score >= Config.DEFAULT_THRESHOLD:
                 colour = (75, 192, 192) 
             else:
                 colour = (255, 193, 7)  
@@ -356,9 +380,9 @@ def annotate_image(img_rgb: np.ndarray, detections: list) -> np.ndarray:
     return img
 
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  STREAMLIT UI & CSS
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 CUSTOM_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -426,16 +450,49 @@ div[data-testid="stFileUploader"] {
     background: var(--surface);
 }
 
-.result-row {
-    display: flex; align-items: center; gap: 12px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;
+.lock-screen {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--muted);
 }
-.chip-present  { background: rgba(63,185,80,.1);  color: #3FB950; border: 1px solid rgba(63,185,80,.3);  border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; }
-.chip-already  { background: rgba(210,153,34,.1); color: #D29922; border: 1px solid rgba(210,153,34,.3); border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; }
-.chip-unknown  { background: rgba(255,123,114,.1);color: #FF7B72; border: 1px solid rgba(255,123,114,.3);border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; }
+.lock-screen h3 {
+    color: #FFFFFF;
+    margin-bottom: 10px;
+}
 
-.conf-bar-wrap { background: var(--bg); border-radius: 10px; height:4px; flex:1; min-width:60px; }
+/* Explicit Post-Scan Grid Layout */
+.result-header {
+    display: grid; 
+    grid-template-columns: 80px 1fr 120px 100px 60px; 
+    gap: 10px; 
+    padding: 0 14px 8px 14px; 
+    font-weight: 600; 
+    color: var(--muted); 
+    font-size: 0.85rem; 
+    border-bottom: 1px solid var(--border); 
+    margin-bottom: 8px;
+}
+.result-row {
+    display: grid; 
+    grid-template-columns: 80px 1fr 120px 100px 60px; 
+    gap: 10px; 
+    align-items: center;
+    background: var(--surface); 
+    border: 1px solid var(--border);
+    border-radius: 6px; 
+    padding: 10px 14px; 
+    margin-bottom: 8px;
+}
+
+.chip-present  { background: rgba(63,185,80,.1);  color: #3FB950; border: 1px solid rgba(63,185,80,.3);  border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; text-align: center; }
+.chip-updated  { background: rgba(88,166,255,.1); color: #58A6FF; border: 1px solid rgba(88,166,255,.3); border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; text-align: center;}
+.chip-already  { background: rgba(210,153,34,.1); color: #D29922; border: 1px solid rgba(210,153,34,.3); border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; text-align: center;}
+.chip-unknown  { background: rgba(255,123,114,.1);color: #FF7B72; border: 1px solid rgba(255,123,114,.3);border-radius: 12px; padding: 2px 8px; font-size:0.75rem; font-weight:500; text-align: center;}
+
+.conf-bar-wrap { background: var(--bg); border-radius: 10px; height:4px; width: 100%; }
 .conf-bar      { height:4px; border-radius:10px; background: var(--accent); }
 </style>
 """
@@ -449,7 +506,9 @@ def hero_banner():
     """, unsafe_allow_html=True)
 
 
-# ── PAGE: REGISTER ─────────────────────────────────────────────────
+# -----------------------------------------------------------------
+#  PAGE: REGISTER
+# -----------------------------------------------------------------
 def page_register(DeepFace, is_admin):
     st.markdown('<p class="section-title">Student Registration</p>', unsafe_allow_html=True)
     
@@ -462,15 +521,24 @@ def page_register(DeepFace, is_admin):
         with rc2:
             name = st.text_input("Full Name", placeholder="Enter student name")
             
-        mode = st.radio("Upload Method", ["Single photo", "Multiple photos"], horizontal=True)
+        mode = st.radio("Upload Method", [ "Multiple photos"], horizontal=True)
         
+        can_proceed = False
         if mode == "Single photo":
             files = st.file_uploader("Select Image", type=["jpg", "jpeg", "png"])
             files = [files] if files else []
+            if files:
+                can_proceed = True
         else:
-            files = st.file_uploader("Select Images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+            files = st.file_uploader("Select Images (Minimum 3 required)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+            if files:
+                if len(files) < 3:
+                    st.warning("System Policy: Please upload at least 3 images from different angles to ensure high recognition accuracy.")
+                    can_proceed = False
+                else:
+                    can_proceed = True
 
-        if files and name.strip() and roll_number.strip():
+        if can_proceed and name.strip() and roll_number.strip():
             if st.button("Register Student Data", use_container_width=True):
                 identifier = f"{roll_number.strip()} - {name.strip()}"
                 
@@ -486,44 +554,57 @@ def page_register(DeepFace, is_admin):
                     bar.progress((i + 1) / len(files), text=f"Processed {i+1}/{len(files)}")
 
                 if ok:
-                    st.success(f"Success: {identifier} registered with {ok} encodings.")
+                    st.success(f"Registration Complete: {identifier} registered with {ok} data points.")
                 else:
-                    st.error("Error: No valid faces detected in the provided images.")
+                    st.error("Registration Failed: No valid faces detected in the provided images.")
         elif files and (not name.strip() or not roll_number.strip()):
-            st.warning("Both Roll Number and Student Name are required.")
+            st.warning("Both Roll Number and Student Name fields are strictly required.")
 
     with c2:
-        st.markdown('<p class="section-title">Database Overview</p>', unsafe_allow_html=True)
-        db = load_embeddings()
-        if not db:
-            st.info("System database is empty.")
-        else:
-            for identifier, data in db.items():
-                with st.expander(f"{identifier} ({len(data['embeddings'])} records)"):
-                    cols = st.columns([1, 2])
-                    if data.get("thumbnail") is not None:
-                        cols[0].image(data["thumbnail"], width=100) 
-                    
-                    try:
-                        roll, disp_name = identifier.split(" - ", 1)
-                    except ValueError:
-                        roll, disp_name = "N/A", identifier
+        if is_admin:
+            st.markdown('<p class="section-title">Database Overview</p>', unsafe_allow_html=True)
+            db = load_embeddings()
+            if not db:
+                st.info("System database is currently empty.")
+            else:
+                for identifier, data in db.items():
+                    with st.expander(f"{identifier} ({len(data['embeddings'])} records)"):
+                        cols = st.columns([1, 2])
+                        if data.get("thumbnail") is not None:
+                            cols[0].image(data["thumbnail"], width=100) 
                         
-                    cols[1].markdown(f"**Roll No:** {roll}")
-                    cols[1].markdown(f"**Name:** {disp_name}")
-                    cols[1].markdown(f"**Data Points:** {len(data['embeddings'])}")
-                    
-                    # --- ADMIN ONLY: REMOVE RECORD ---
-                    if is_admin:
+                        try:
+                            roll, disp_name = identifier.split(" - ", 1)
+                        except ValueError:
+                            roll, disp_name = "N/A", identifier
+                            
+                        cols[1].markdown(f"**Roll No:** {roll}")
+                        cols[1].markdown(f"**Name:** {disp_name}")
+                        cols[1].markdown(f"**Data Points:** {len(data['embeddings'])}")
+                        
                         if cols[1].button("Remove Record", key=f"del_{identifier}"):
                             delete_student(identifier)
                             st.rerun()
+        else:
+            st.markdown('<p class="section-title">Database Overview</p>', unsafe_allow_html=True)
+            st.info("Database Overview is restricted to Administrators. Please enter the Access Key in the sidebar to view records.")
 
 
-# ── PAGE: MARK ATTENDANCE ─────────────────────────────────────────
-def page_attendance(DeepFace, threshold):
+# -----------------------------------------------------------------
+#  PAGE: MARK ATTENDANCE
+# -----------------------------------------------------------------
+def page_attendance(DeepFace, threshold, is_admin):
     st.markdown('<p class="section-title">Classroom Scan</p>', unsafe_allow_html=True)
     
+    if not is_admin:
+        st.markdown("""
+        <div class="lock-screen">
+            <h3>Administrator Access Required</h3>
+            <p>Classroom scanning and attendance logging are locked. Please enter the Access Key in the sidebar menu to unlock this module.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
     db = load_embeddings()
     if not db:
         st.warning("Database empty. Please register students prior to scanning.")
@@ -547,10 +628,10 @@ def page_attendance(DeepFace, threshold):
                 st.error("Detection Failed: Zero faces located in the source image.")
                 return
 
-            st.success(f"Scan Complete: Located {len(faces)} subjects.")
             date_str    = att_date.strftime("%Y-%m-%d")
             detections  = []
             results_log = []
+            pending_updates = {}
 
             for face in faces:
                 identifier, score = match_face(face["embedding"], db, threshold)
@@ -564,21 +645,31 @@ def page_attendance(DeepFace, threshold):
                         
                     marked, msg = mark_attendance(roll_no, stu_name, date_str)
                     
+                    status = "present" if marked else "already"
+                    
+                    if score >= Config.AUTO_UPDATE_THRESHOLD:
+                        pending_updates[identifier] = face["embedding"]
+                        status = "updated" if marked else "already_updated"
+
                     results_log.append({
                         "roll":   roll_no,
                         "name":   stu_name,
                         "score":  score,
-                        "status": "present"  if marked else "already",
-                        "msg":    msg,
+                        "status": status,
                     })
                 else:
                     results_log.append({
                         "roll": "N/A", 
                         "name": "Unknown", 
                         "score": score, 
-                        "status": "unknown", 
-                        "msg": "Unidentified"
+                        "status": "unknown"
                     })
+
+            if pending_updates:
+                updated_count = batch_update_embeddings(pending_updates)
+                st.success(f"Scan Complete: Located {len(faces)} subjects. Model learned {updated_count} new variations.")
+            else:
+                st.success(f"Scan Complete: Located {len(faces)} subjects.")
 
             st.session_state["last_annotated"] = annotate_image(img_rgb, detections)
             st.session_state["last_results"]   = results_log
@@ -591,37 +682,64 @@ def page_attendance(DeepFace, threshold):
             results_log = st.session_state["last_results"]
             st.markdown('<p class="section-title">Match Results</p>', unsafe_allow_html=True)
 
+            # Explicit Header for Columns
+            st.markdown("""
+            <div class="result-header">
+                <span>Roll No</span>
+                <span>Name</span>
+                <span>Status</span>
+                <span>Match Conf.</span>
+                <span>Score</span>
+            </div>
+            """, unsafe_allow_html=True)
+
             for r in results_log:
-                chip_cls = {"present": "chip-present", "already": "chip-already", "unknown": "chip-unknown"}[r["status"]]
-                chip_lbl = {"present": "Present", "already": "Duplicate", "unknown": "Unknown"}[r["status"]]
-                bar_w    = int(r["score"] * 100)
-                bar_col  = "#3FB950" if r["status"] != "unknown" else "#FF7B72"
+                status_map = {
+                    "present": ("chip-present", "Logged"),
+                    "updated": ("chip-updated", "Logged + Learned"),
+                    "already": ("chip-already", "Duplicate"),
+                    "already_updated": ("chip-updated", "Dup + Learned"),
+                    "unknown": ("chip-unknown", "Unknown")
+                }
                 
-                disp_text = f"[{r['roll']}] {r['name']}" if r['status'] != "unknown" else "Unknown Subject"
+                chip_cls, chip_lbl = status_map.get(r["status"], ("chip-unknown", "Unknown"))
+                bar_w    = int(r["score"] * 100)
+                bar_col  = "#3FB950" if "unknown" not in r["status"] else "#FF7B72"
+                
+                if "updated" in r["status"]:
+                    bar_col = "#58A6FF"
+                
+                roll_disp = r['roll'] if r['status'] != "unknown" else "—"
+                name_disp = r['name'] if r['status'] != "unknown" else "Unidentified Subject"
                 
                 st.markdown(f"""
                 <div class="result-row">
-                  <span style="font-weight:500;min-width:140px">{disp_text}</span>
+                  <span style="font-weight:600; font-family: monospace;">{roll_disp}</span>
+                  <span style="font-weight:500;">{name_disp}</span>
                   <span class="{chip_cls}">{chip_lbl}</span>
                   <div class="conf-bar-wrap">
                     <div class="conf-bar" style="width:{bar_w}%;background:{bar_col}"></div>
                   </div>
-                  <span style="font-size:0.8rem;color:var(--muted)">{r['score']:.2f}</span>
+                  <span style="font-size:0.85rem;color:var(--muted);text-align:right;">{r['score']:.2f}</span>
                 </div>
                 """, unsafe_allow_html=True)
 
-            present = sum(1 for r in results_log if r["status"] == "present")
-            already = sum(1 for r in results_log if r["status"] == "already")
+            present = sum(1 for r in results_log if "present" in r["status"] or "updated" in r["status"])
+            already = sum(1 for r in results_log if "already" in r["status"])
             unknown = sum(1 for r in results_log if r["status"] == "unknown")
+            learned = sum(1 for r in results_log if "updated" in r["status"])
             
             st.markdown("<br>", unsafe_allow_html=True)
-            m1, m2, m3 = st.columns(3)
+            m1, m2, m3, m4 = st.columns(4)
             m1.metric("Newly Marked", present)
             m2.metric("Duplicates", already)
             m3.metric("Unidentified", unknown)
+            m4.metric("Profiles Learned", learned)
 
 
-# ── PAGE: VIEW RECORDS ────────────────────────────────────────────
+# -----------------------------------------------------------------
+#  PAGE: VIEW RECORDS
+# -----------------------------------------------------------------
 def page_records():
     st.markdown('<p class="section-title">System Logs</p>', unsafe_allow_html=True)
 
@@ -654,7 +772,7 @@ def page_records():
     total_days = df["Date"].nunique()
     summary = (
         df.groupby(["Roll Number", "Name"])
-        .agg(Days_Present=("Date", "nunique"), First_Seen=("Date", "min"), Last_Seen=("Date", "max"))
+        .agg(Days_Present=("Date", "nunique"), First_Seen=("Date", "min"))
         .reset_index()
     )
     summary["Attendance_%"] = (summary["Days_Present"] / total_days * 100).round(1).astype(str) + "%"
@@ -662,21 +780,32 @@ def page_records():
 
     st.markdown("<br>", unsafe_allow_html=True)
     d1, d2 = st.columns(2)
+    
+    # Export CSV dynamically based on filter
     with d1:
         csv = filt.to_csv(index=False)
-        st.download_button("Export CSV", csv, f"log_{sel_date}.csv", "text/csv", use_container_width=True)
+        date_label = sel_date if sel_date != "All" else "All_Dates"
+        st.download_button("Export Filtered CSV", csv, f"Attendance_{date_label}.csv", "text/csv", use_container_width=True)
+        
+    # Export Excel dynamically based on filter using BytesIO
     with d2:
-        if os.path.exists(Config.ATTENDANCE_FILE):
-            with open(Config.ATTENDANCE_FILE, "rb") as xf:
-                st.download_button(
-                    "Export Excel", xf.read(),
-                    "attendance_master.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            filt.to_excel(writer, index=False, sheet_name='Attendance Logs')
+        excel_data = output.getvalue()
+        
+        st.download_button(
+            "Export Filtered Excel", 
+            excel_data, 
+            f"Attendance_{date_label}.xlsx", 
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            use_container_width=True
+        )
 
 
-# ── PAGE: SETTINGS ────────────────────────────────────────────────
+# -----------------------------------------------------------------
+#  PAGE: SETTINGS
+# -----------------------------------------------------------------
 def page_settings(threshold, is_admin):
     st.markdown('<p class="section-title">Configuration</p>', unsafe_allow_html=True)
 
@@ -691,12 +820,13 @@ def page_settings(threshold, is_admin):
 | Distance Metric | Cosine |
 | Active Cutoff | `{threshold:.2f}` |
 | Administrator Mode | `{"Active" if is_admin else "Disabled"}` |
+| Continuous Learning | `Active` |
+| Learning Threshold | `{Config.AUTO_UPDATE_THRESHOLD:.2f}` |
         """)
 
     with c2:
         st.subheader("Data Wipes")
         
-        # --- ADMIN ONLY: DATA WIPES ---
         if is_admin:
             if st.button("Purge Attendance Logs", use_container_width=True):
                 if os.path.exists(Config.ATTENDANCE_FILE):
@@ -710,29 +840,27 @@ def page_settings(threshold, is_admin):
                 st.success("Identities purged successfully.")
                 st.rerun()
         else:
-            st.info("Admin access required to perform system data wipes.")
+            st.info("System modification is restricted. Please enter the Admin Access Key in the sidebar to perform data wipes.")
 
 
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 #  MAIN LOOP
-# ─────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 def main():
     st.set_page_config(
-        page_title="Attendance Control",
+        page_title="Smart Attendance Portal",
         layout="wide",
         initial_sidebar_state="expanded",
     )
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     init_directories()
     
-    # Initialize Admin State
     if "is_admin" not in st.session_state:
         st.session_state["is_admin"] = False
 
     with st.sidebar:
         st.markdown("### Navigation")
         
-        # --- ADMIN ONLY: SYSTEM LOGS PAGE ---
         nav_options = ["Student Registration", "Classroom Scan", "Configuration"]
         if st.session_state["is_admin"]:
             nav_options.insert(2, "System Logs")
@@ -749,10 +877,9 @@ def main():
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         today_cnt = len(att[att["Date"] == today_str]) if not att.empty else 0
 
-        st.metric("Identities", len(db))
+        st.metric("Identities Enrolled", len(db))
         st.metric("Present Today", today_cnt)
         
-        # --- ADMIN ONLY: THRESHOLD SLIDER ---
         if st.session_state["is_admin"]:
             st.markdown("---")
             threshold = st.slider(
@@ -763,7 +890,6 @@ def main():
         else:
             threshold = Config.DEFAULT_THRESHOLD
             
-        # Admin Login Area at the bottom of the sidebar
         st.markdown("<br><br><hr>", unsafe_allow_html=True)
         st.markdown("#### Admin Portal")
         pwd = st.text_input("Access Key", type="password", key="admin_pwd_input")
@@ -783,20 +909,18 @@ def main():
                 st.session_state["is_admin"] = False
                 st.rerun()
 
-    # Load DeepFace model
     if "deepface_model" not in st.session_state:
-        with st.spinner("Initializing Deep Learning Models..."):
+        with st.spinner("Initializing AI Models..."):
             st.session_state.deepface_model = load_deepface()
     
     DeepFace = st.session_state.deepface_model
 
     hero_banner()
 
-    # Route handling
     if "Registration" in page:
         page_register(DeepFace, st.session_state["is_admin"])
     elif "Scan" in page:
-        page_attendance(DeepFace, threshold)
+        page_attendance(DeepFace, threshold, st.session_state["is_admin"])
     elif "Logs" in page:
         page_records()
     elif "Configuration" in page:
