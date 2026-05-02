@@ -1,3 +1,17 @@
+---
+title: Smart Classroom Attendance
+emoji: 🎓
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.32.0"
+app_file: app.py
+pinned: false
+---
+
+# Smart Classroom Attendance System
+
+
 # DataScience_Proj# 🎓 Smart Classroom Attendance System
 ### Powered by ArcFace CNN · MTCNN Detection · Cosine Similarity
 
