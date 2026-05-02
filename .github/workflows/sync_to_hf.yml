@@ -1,0 +1,22 @@
+name: Sync to Hugging Face space
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      # FIX 1: Updated to v4 to remove the Node.js warning
+      - uses: actions/checkout@v4 
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        
+        # FIX 2: Added --force to overwrite out-of-sync errors. 
+        # CRITICAL: Replace the YOUR_HF_USERNAME and YOUR_SPACE_NAME placeholders below!
+        run: git push --force https://Adbravee:$HF_TOKEN@huggingface.co/spaces/Adbravee/SMART_CLASSROOM_ATTENDANCE_SYSTEM main
