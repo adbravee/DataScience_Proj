@@ -2,7 +2,7 @@
 ===================================================================
         SMART CLASSROOM ATTENDANCE SYSTEM                         
         Powered by ArcFace CNN + RetinaFace                       
-        Production-Ready Build: RBAC, Continuous Learning, Exports            
+        Production-Ready Build: RBAC, Continuous Learning, Cloud  
 ===================================================================
 """
 
@@ -12,6 +12,8 @@ import warnings
 from io import BytesIO
 from datetime import datetime, date, timezone, timedelta
 
+import shutil
+from huggingface_hub import HfApi, hf_hub_download
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -42,7 +44,7 @@ def check_imports():
         errors.append("retina-face (Crucial for group detection)")
     
     if errors:
-        st.error(f"Missing Python packages: {', '.join(errors)}\nFix: pip install opencv-python openpyxl retina-face")
+        st.error(f"Missing Python packages: {', '.join(errors)}\nFix: pip install opencv-python-headless openpyxl retina-face")
         st.stop()
 
 check_imports()
@@ -57,7 +59,7 @@ from openpyxl.utils import get_column_letter
 # -----------------------------------------------------------------
 class Config:
     # --- SECURITY ---
-    ADMIN_PASSWORD    = st.secrets.get("ADMIN_PASSWORD","default_fallback_do_not_use")  # Master password for scanning and data management
+    ADMIN_PASSWORD    = st.secrets.get("ADMIN_PASSWORD","default_fallback_do_not_use")  
     
     # --- MODEL ---
     MODEL_NAME        = "ArcFace"
@@ -73,6 +75,59 @@ class Config:
     EMBEDDINGS_FILE   = "data/student_embeddings.pkl"
     ATTENDANCE_FILE   = "data/attendance.xlsx"
     STUDENT_IMG_DIR   = "data/student_images"
+
+
+# -----------------------------------------------------------------
+#  CLOUD DATABASE SYNCHRONIZATION
+# -----------------------------------------------------------------
+DATASET_REPO_ID = "Adbravee/attendance-database" 
+HF_TOKEN = st.secrets.get("HF_TOKEN")
+api = HfApi()
+
+def pull_from_cloud():
+    """Downloads the latest database from the cloud when the app wakes up."""
+    if not HF_TOKEN:
+        print("No HF_TOKEN found. Skipping cloud pull.")
+        return
+    
+    os.makedirs(Config.DATA_DIR, exist_ok=True)
+    files_to_sync = ["student_embeddings.pkl", "attendance.xlsx"]
+    
+    for file in files_to_sync:
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id=DATASET_REPO_ID, 
+                filename=f"data/{file}", 
+                repo_type="dataset", 
+                token=HF_TOKEN
+            )
+            shutil.copy(downloaded_path, f"data/{file}")
+            print(f"Successfully pulled {file} from cloud.")
+        except Exception as e:
+            print(f"No existing {file} found in cloud or error occurred. Starting fresh.")
+
+def push_to_cloud(filename):
+    """Uploads the local database back to the cloud after a change is made."""
+    if not HF_TOKEN:
+        return
+        
+    try:
+        api.upload_file(
+            path_or_fileobj=f"data/{filename}",
+            path_in_repo=f"data/{filename}",
+            repo_id=DATASET_REPO_ID,
+            repo_type="dataset",
+            token=HF_TOKEN
+        )
+        print(f"Successfully pushed {filename} to cloud.")
+    except Exception as e:
+        print(f"Failed to push {filename} to cloud: {e}")
+
+@st.cache_resource(show_spinner=False)
+def initialize_cloud_sync():
+    """Runs exactly once when the Hugging Face server spins up."""
+    pull_from_cloud()
+    return True
 
 
 # -----------------------------------------------------------------
@@ -146,8 +201,6 @@ def extract_all_faces(img_rgb: np.ndarray, DeepFace) -> list:
                 continue
             
             confidence = r.get("face_confidence", 1.0)
-            
-            # Accuracy Filter: Reject background artifacts
             if confidence < 0.90:
                 continue
                 
@@ -182,6 +235,8 @@ def load_embeddings() -> dict:
 def save_embeddings(db: dict) -> None:
     with open(Config.EMBEDDINGS_FILE, "wb") as f:
         pickle.dump(db, f)
+    # Trigger cloud backup instantly
+    push_to_cloud("student_embeddings.pkl")
 
 def add_student(identifier: str, embedding: np.ndarray, thumb_rgb: np.ndarray = None) -> None:
     db = load_embeddings()
@@ -208,7 +263,6 @@ def batch_update_embeddings(updates: dict) -> int:
         if identifier in db:
             db[identifier]["embeddings"].append(new_emb)
             
-            # Enforce memory limit
             if len(db[identifier]["embeddings"]) > Config.MAX_RECORDS_PER_IDENTITY:
                 original_reg = db[identifier]["embeddings"][0]
                 recent_recs = db[identifier]["embeddings"][-(Config.MAX_RECORDS_PER_IDENTITY - 1):]
@@ -286,6 +340,8 @@ def save_attendance(df: pd.DataFrame) -> None:
 
     ws.row_dimensions[1].height = 22
     wb.save(Config.ATTENDANCE_FILE)
+    # Trigger cloud backup instantly
+    push_to_cloud("attendance.xlsx")
 
 def mark_attendance(roll_number: str, name: str, date_str: str) -> tuple[bool, str]:
     now = datetime.now(IST).strftime("%H:%M:%S")
@@ -463,7 +519,6 @@ div[data-testid="stFileUploader"] {
     margin-bottom: 10px;
 }
 
-/* Explicit Post-Scan Grid Layout */
 .result-header {
     display: grid; 
     grid-template-columns: 80px 1fr 120px 100px 60px; 
@@ -682,7 +737,6 @@ def page_attendance(DeepFace, threshold, is_admin):
             results_log = st.session_state["last_results"]
             st.markdown('<p class="section-title">Match Results</p>', unsafe_allow_html=True)
 
-            # Explicit Header for Columns
             st.markdown("""
             <div class="result-header">
                 <span>Roll No</span>
@@ -781,13 +835,11 @@ def page_records():
     st.markdown("<br>", unsafe_allow_html=True)
     d1, d2 = st.columns(2)
     
-    # Export CSV dynamically based on filter
     with d1:
         csv = filt.to_csv(index=False)
         date_label = sel_date if sel_date != "All" else "All_Dates"
         st.download_button("Export Filtered CSV", csv, f"Attendance_{date_label}.csv", "text/csv", use_container_width=True)
         
-    # Export Excel dynamically based on filter using BytesIO
     with d2:
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -822,6 +874,7 @@ def page_settings(threshold, is_admin):
 | Administrator Mode | `{"Active" if is_admin else "Disabled"}` |
 | Continuous Learning | `Active` |
 | Learning Threshold | `{Config.AUTO_UPDATE_THRESHOLD:.2f}` |
+| Cloud Backup | `Active (Hugging Face)` |
         """)
 
     with c2:
@@ -831,12 +884,16 @@ def page_settings(threshold, is_admin):
             if st.button("Purge Attendance Logs", use_container_width=True):
                 if os.path.exists(Config.ATTENDANCE_FILE):
                     os.remove(Config.ATTENDANCE_FILE)
+                # Wipe from cloud as well
+                push_to_cloud("attendance.xlsx")
                 st.success("Logs purged successfully.")
                 st.rerun()
 
             if st.button("Purge Registered Identities", use_container_width=True):
                 if os.path.exists(Config.EMBEDDINGS_FILE):
                     os.remove(Config.EMBEDDINGS_FILE)
+                # Wipe from cloud as well
+                push_to_cloud("student_embeddings.pkl")
                 st.success("Identities purged successfully.")
                 st.rerun()
         else:
@@ -853,7 +910,10 @@ def main():
         initial_sidebar_state="expanded",
     )
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+    
+    # Run setup operations
     init_directories()
+    initialize_cloud_sync() # Safely downloads DB exactly once per server boot
     
     if "is_admin" not in st.session_state:
         st.session_state["is_admin"] = False
