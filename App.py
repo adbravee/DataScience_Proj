@@ -673,7 +673,7 @@ def page_attendance(DeepFace, threshold, is_admin):
 
         if upl:
             img_rgb = np.array(Image.open(upl).convert("RGB"))
-            st.image(img_rgb, caption="Input Source", use_container_width=True)
+            st.image(img_rgb, caption="Input Source", use_column_width=True)
 
         if upl and st.button("Execute Scan & Log Attendance", use_container_width=True):
             with st.spinner("Executing RetinaFace detection matrix..."):
@@ -731,7 +731,7 @@ def page_attendance(DeepFace, threshold, is_admin):
 
     with c2:
         if "last_annotated" in st.session_state:
-            st.image(st.session_state["last_annotated"], caption="Processed Output", use_container_width=True)
+            st.image(st.session_state["last_annotated"], caption="Processed Output", use_column_width=True)
 
         if "last_results" in st.session_state:
             results_log = st.session_state["last_results"]
